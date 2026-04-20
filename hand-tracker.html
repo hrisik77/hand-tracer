@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>HAND TRACER — Neural Cord Mapper</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet"/>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #060810;
+    --bg2: #0b0e18;
+    --bg3: #111522;
+    --border: rgba(255,255,255,0.07);
+    --border2: rgba(255,255,255,0.14);
+    --text: #dde2f0;
+    --text2: #7880a0;
+    --text3: #3a4060;
+    --cyan: #00f5ff;
+    --cyan2: rgba(0,245,255,0.15);
+    --cyan3: rgba(0,245,255,0.05);
+    --magenta: #ff00c8;
+    --magenta2: rgba(255,0,200,0.15);
+    --green: #39ff14;
+    --green2: rgba(57,255,20,0.15);
+    --amber: #ffb300;
+    --font-disp: 'Orbitron', sans-serif;
+    --font-mono: 'Share Tech Mono', monospace;
+  }
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font-mono); overflow: hidden; }
+
+  /* Scanlines */
+  body::before {
+    content: ''; position: fixed; inset: 0; z-index: 1000; pointer-events: none;
+    background: repeating-linear-gradient(0deg, transparent, transparent 3px, rgba(0,0,0,0.06) 3px, rgba(0,0,0,0.06) 4px);
+  }
+  /* Grid bg */
+  body::after {
+    content: ''; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background-image:
+      linear-gradient(rgba(0,245,255,0.02) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,245,255,0.02) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+
+  .layout { position: fixed; inset: 0; z-index: 1; display: flex; flex-direction: column; }
+
+  /* Top bar */
+  .topbar {
+    display: flex; align-items: center; gap: 16px; padding: 10px 20px;
+    border-bottom: 1px solid var(--border); background: rgba(6,8,16,0.9);
+    backdrop-filter: blur(8px); flex-shrink: 0;
+  }
+  .logo { font-family: var(--font-disp); font-size: 15px; font-weight: 900; letter-spacing: 0.12em; color: var(--cyan); }
+  .logo span { color: var(--magenta); }
+  .topbar-sub { font-size: 10px; color: var(--text3); letter-spacing: 0.12em; }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 10px var(--green); animation: blink 1.8s ease-in-out infinite; flex-shrink: 0; }
+  .status-dot.inactive { background: var(--text3); box-shadow: none; animation: none; }
+  @keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0.3;} }
+  .status-label { font-size: 10px; color: var(--text2); letter-spacing: 0.1em; }
+  .topbar-right { margin-left: auto; display: flex; gap: 16px; align-items: center; }
+  .stat-pill { background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: 4px 10px; font-size: 10px; color: var(--text2); letter-spacing: 0.08em; }
+  .stat-pill span { color: var(--cyan); font-weight: 700; }
+
+  /* Main content */
+  .main { flex: 1; display: flex; gap: 0; overflow: hidden; }
+
+  /* Camera area */
+  .cam-wrap { flex: 1; position: relative; overflow: hidden; background: #000; }
+  #videoEl { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); opacity: 0.85; }
+  #canvasEl { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  /* Overlay corners */
+  .corner { position: absolute; width: 20px; height: 20px; z-index: 10; }
+  .corner-tl { top: 12px; left: 12px; border-top: 2px solid var(--cyan); border-left: 2px solid var(--cyan); }
+  .corner-tr { top: 12px; right: 12px; border-top: 2px solid var(--cyan); border-right: 2px solid var(--cyan); }
+  .corner-bl { bottom: 12px; left: 12px; border-bottom: 2px solid var(--cyan); border-left: 2px solid var(--cyan); }
+  .corner-br { bottom: 12px; right: 12px; border-bottom: 2px solid var(--cyan); border-right: 2px solid var(--cyan); }
+
+  /* Crosshair center */
+  .crosshair { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); z-index: 10; opacity: 0.15; pointer-events: none; }
+  .crosshair::before, .crosshair::after { content: ''; position: absolute; background: var(--cyan); }
+  .crosshair::before { width: 1px; height: 40px; top: -20px; left: 0; }
+  .crosshair::after { width: 40px; height: 1px; top: 0; left: -20px; }
+
+  /* Scan line animation */
+  .scanline-active { position: absolute; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, var(--cyan), transparent); z-index: 10; animation: scanmove 3s linear infinite; pointer-events: none; opacity: 0.4; }
+  @keyframes scanmove { 0%{top:-2px;} 100%{top:100%;} }
+
+  /* No camera overlay */
+  .no-cam { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; z-index: 20; background: var(--bg); }
+  .no-cam-icon { font-size: 40px; opacity: 0.2; }
+  .no-cam-text { font-size: 12px; color: var(--text2); letter-spacing: 0.1em; }
+  .btn-start { font-family: var(--font-mono); font-size: 13px; letter-spacing: 0.1em; padding: 12px 28px; border: 1px solid var(--cyan); border-radius: 6px; background: var(--cyan2); color: var(--cyan); cursor: pointer; transition: all 0.2s; }
+  .btn-start:hover { background: rgba(0,245,255,0.25); box-shadow: 0 0 20px rgba(0,245,255,0.3); }
+
+  /* Side panel */
+  .panel {
+    width: 220px; flex-shrink: 0; background: rgba(6,8,16,0.95);
+    border-left: 1px solid var(--border); display: flex; flex-direction: column;
+    overflow-y: auto; backdrop-filter: blur(8px);
+  }
+  .panel-section { padding: 14px 16px; border-bottom: 1px solid var(--border); }
+  .panel-title { font-size: 9px; letter-spacing: 0.15em; color: var(--text3); margin-bottom: 10px; }
+
+  /* Finger readout */
+  .finger-list { display: flex; flex-direction: column; gap: 6px; }
+  .finger-row { display: flex; align-items: center; justify-content: space-between; }
+  .finger-name { font-size: 10px; color: var(--text2); letter-spacing: 0.06em; }
+  .finger-bar-bg { width: 70px; height: 3px; background: var(--bg3); border-radius: 2px; overflow: hidden; }
+  .finger-bar { height: 100%; border-radius: 2px; transition: width 0.1s; }
+  .finger-val { font-size: 10px; color: var(--cyan); min-width: 28px; text-align: right; }
+
+  /* Landmark coords */
+  .coord-grid { display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow-y: auto; }
+  .coord-row { display: flex; justify-content: space-between; font-size: 9px; color: var(--text3); }
+  .coord-row span { color: var(--text2); }
+  .coord-row .lm-active { color: var(--cyan); }
+
+  /* Gesture display */
+  .gesture-box { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; text-align: center; }
+  .gesture-name { font-family: var(--font-disp); font-size: 13px; color: var(--magenta); letter-spacing: 0.08em; }
+  .gesture-sub { font-size: 9px; color: var(--text3); margin-top: 4px; letter-spacing: 0.08em; }
+
+  /* Controls */
+  .ctrl-row { display: flex; flex-direction: column; gap: 8px; }
+  .ctrl-item { display: flex; align-items: center; justify-content: space-between; }
+  .ctrl-label { font-size: 10px; color: var(--text2); letter-spacing: 0.06em; }
+  .toggle { width: 32px; height: 18px; background: var(--bg3); border: 1px solid var(--border); border-radius: 9px; cursor: pointer; position: relative; transition: background 0.2s; }
+  .toggle.on { background: rgba(0,245,255,0.2); border-color: var(--cyan); }
+  .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--text3); transition: all 0.2s; }
+  .toggle.on::after { left: 16px; background: var(--cyan); box-shadow: 0 0 6px var(--cyan); }
+
+  /* Color swatches */
+  .color-row { display: flex; gap: 6px; }
+  .swatch { width: 20px; height: 20px; border-radius: 4px; cursor: pointer; border: 2px solid transparent; transition: all 0.15s; }
+  .swatch.active { border-color: #fff; }
+  .swatch:hover { transform: scale(1.15); }
+
+  /* Bottom bar */
+  .bottombar {
+    display: flex; align-items: center; gap: 16px; padding: 8px 20px;
+    border-top: 1px solid var(--border); background: rgba(6,8,16,0.9);
+    backdrop-filter: blur(8px); flex-shrink: 0; font-size: 10px; color: var(--text3); letter-spacing: 0.08em;
+  }
+  .bb-item { display: flex; align-items: center; gap: 6px; }
+  .bb-val { color: var(--cyan); }
+  .bb-sep { opacity: 0.3; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--bg3); border-radius: 2px; }
+</style>
+</head>
+<body>
+<div class="layout">
+  <!-- Top bar -->
+  <div class="topbar">
+    <div class="logo">HAND<span>TRACER</span></div>
+    <div class="topbar-sub">NEURAL CORD MAPPER v3.1</div>
+    <div class="status-dot inactive" id="statusDot"></div>
+    <div class="status-label" id="statusLabel">OFFLINE</div>
+    <div class="topbar-right">
+      <div class="stat-pill">FPS <span id="fpsVal">—</span></div>
+      <div class="stat-pill">HANDS <span id="handCount">0</span></div>
+      <div class="stat-pill">LANDMARKS <span id="lmCount">0</span></div>
+    </div>
+  </div>
+
+  <!-- Main -->
+  <div class="main">
+    <!-- Camera + canvas -->
+    <div class="cam-wrap">
+      <div class="corner corner-tl"></div>
+      <div class="corner corner-tr"></div>
+      <div class="corner corner-bl"></div>
+      <div class="corner corner-br"></div>
+      <div class="crosshair"></div>
+      <div class="scanline-active" id="scanline"></div>
+
+      <video id="videoEl" autoplay muted playsinline></video>
+      <canvas id="canvasEl"></canvas>
+
+      <div class="no-cam" id="noCam">
+        <div class="no-cam-icon">✋</div>
+        <div class="no-cam-text">CAMERA NOT INITIALIZED</div>
+        <button class="btn-start" onclick="startCamera()">[ INITIALIZE SENSOR ]</button>
+        <div style="font-size:10px; color: var(--text3); margin-top: 8px;">Requires camera permission</div>
+      </div>
+    </div>
+
+    <!-- Side panel -->
+    <div class="panel">
+      <div class="panel-section">
+        <div class="panel-title">GESTURE_DETECT</div>
+        <div class="gesture-box">
+          <div class="gesture-name" id="gestureName">—</div>
+          <div class="gesture-sub" id="gestureSub">AWAITING INPUT</div>
+        </div>
+      </div>
+
+      <div class="panel-section">
+        <div class="panel-title">FINGER_EXTENSION</div>
+        <div class="finger-list" id="fingerList">
+          <div class="finger-row"><span class="finger-name">THUMB</span><div class="finger-bar-bg"><div class="finger-bar" id="fb0" style="width:0%;background:#ff00c8;"></div></div><span class="finger-val" id="fv0">—</span></div>
+          <div class="finger-row"><span class="finger-name">INDEX</span><div class="finger-bar-bg"><div class="finger-bar" id="fb1" style="width:0%;background:#00f5ff;"></div></div><span class="finger-val" id="fv1">—</span></div>
+          <div class="finger-row"><span class="finger-name">MIDDLE</span><div class="finger-bar-bg"><div class="finger-bar" id="fb2" style="width:0%;background:#39ff14;"></div></div><span class="finger-val" id="fv2">—</span></div>
+          <div class="finger-row"><span class="finger-name">RING</span><div class="finger-bar-bg"><div class="finger-bar" id="fb3" style="width:0%;background:#ffb300;"></div></div><span class="finger-val" id="fv3">—</span></div>
+          <div class="finger-row"><span class="finger-name">PINKY</span><div class="finger-bar-bg"><div class="finger-bar" id="fb4" style="width:0%;background:#ff6b6b;"></div></div><span class="finger-val" id="fv4">—</span></div>
+        </div>
+      </div>
+
+      <div class="panel-section">
+        <div class="panel-title">RENDER_OPTIONS</div>
+        <div class="ctrl-row">
+          <div class="ctrl-item"><span class="ctrl-label">LANDMARKS</span><div class="toggle on" id="toggleLM" onclick="toggleOption('lm')"></div></div>
+          <div class="ctrl-item"><span class="ctrl-label">CORD_LINES</span><div class="toggle on" id="toggleCord" onclick="toggleOption('cord')"></div></div>
+          <div class="ctrl-item"><span class="ctrl-label">FINGER_TIPS</span><div class="toggle on" id="toggleTips" onclick="toggleOption('tips')"></div></div>
+          <div class="ctrl-item"><span class="ctrl-label">GLOW_FX</span><div class="toggle on" id="toggleGlow" onclick="toggleOption('glow')"></div></div>
+          <div class="ctrl-item"><span class="ctrl-label">TRAIL_FX</span><div class="toggle" id="toggleTrail" onclick="toggleOption('trail')"></div></div>
+        </div>
+      </div>
+
+      <div class="panel-section">
+        <div class="panel-title">CORD_COLOR</div>
+        <div class="color-row">
+          <div class="swatch active" style="background:#00f5ff" onclick="setColor('#00f5ff','#00f5ff')" title="Cyan"></div>
+          <div class="swatch" style="background:#ff00c8" onclick="setColor('#ff00c8','#ff00c8')" title="Magenta"></div>
+          <div class="swatch" style="background:#39ff14" onclick="setColor('#39ff14','#39ff14')" title="Green"></div>
+          <div class="swatch" style="background:#ffb300" onclick="setColor('#ffb300','#ffb300')" title="Amber"></div>
+          <div class="swatch" style="background:#fff" onclick="setColor('#ffffff','#aaaaff')" title="White"></div>
+        </div>
+      </div>
+
+      <div class="panel-section" style="flex:1;">
+        <div class="panel-title">LANDMARK_COORDS</div>
+        <div class="coord-grid" id="coordGrid">
+          <div style="font-size:9px;color:var(--text3);">NO HAND DETECTED</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom bar -->
+  <div class="bottombar">
+    <div class="bb-item">MODE <span class="bb-val">REAL-TIME</span></div>
+    <div class="bb-sep">|</div>
+    <div class="bb-item">MODEL <span class="bb-val">MEDIAPIPE_HANDS</span></div>
+    <div class="bb-sep">|</div>
+    <div class="bb-item">LANDMARKS <span class="bb-val">21-POINT</span></div>
+    <div class="bb-sep">|</div>
+    <div class="bb-item">CORD_GROUPS <span class="bb-val">5</span></div>
+    <div class="bb-sep">|</div>
+    <div class="bb-item" id="handedness">HANDEDNESS <span class="bb-val">—</span></div>
+  </div>
+</div>
+
+<!-- MediaPipe -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+<script>
+const video = document.getElementById('videoEl');
+const canvas = document.getElementById('canvasEl');
+const ctx = canvas.getContext('2d');
+
+let opts = { lm: true, cord: true, tips: true, glow: true, trail: false };
+let cordColor = '#00f5ff';
+let cordColor2 = '#00f5ff';
+let frameCount = 0, fps = 0, lastFpsTime = Date.now();
+let lastResults = null;
+let trailPoints = [];
+
+// Finger tip landmark indices
+const FINGER_TIPS = [4, 8, 12, 16, 20];
+const FINGER_MCP  = [2, 5, 9, 13, 17];
+const FINGER_NAMES = ['THUMB', 'INDEX', 'MIDDLE', 'RING', 'PINKY'];
+const FINGER_COLORS = ['#ff00c8', '#00f5ff', '#39ff14', '#ffb300', '#ff6b6b'];
+
+// Cord connection groups (finger bones)
+const CONNECTIONS = [
+  [0,1],[1,2],[2,3],[3,4],       // thumb
+  [0,5],[5,6],[6,7],[7,8],       // index
+  [0,9],[9,10],[10,11],[11,12],  // middle
+  [0,13],[13,14],[14,15],[15,16],// ring
+  [0,17],[17,18],[18,19],[19,20],// pinky
+  [5,9],[9,13],[13,17]           // palm crossings
+];
+
+// Finger group connections for colored cords
+const FINGER_CONNECTIONS = [
+  [[0,1],[1,2],[2,3],[3,4]],
+  [[0,5],[5,6],[6,7],[7,8]],
+  [[0,9],[9,10],[10,11],[11,12]],
+  [[0,13],[13,14],[14,15],[15,16]],
+  [[0,17],[17,18],[18,19],[19,20]],
+];
+
+function toggleOption(key) {
+  opts[key] = !opts[key];
+  document.getElementById('toggle' + key.charAt(0).toUpperCase() + key.slice(1)).classList.toggle('on', opts[key]);
+}
+
+function setColor(c1, c2) {
+  cordColor = c1; cordColor2 = c2;
+  document.querySelectorAll('.swatch').forEach(s => s.classList.remove('active'));
+  event.target.classList.add('active');
+}
+
+function dist(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function isFingerExtended(lms, tipIdx, mcpIdx) {
+  return lms[tipIdx].y < lms[mcpIdx].y;
+}
+
+function detectGesture(lms) {
+  const extended = FINGER_TIPS.map((tip, i) => {
+    if (i === 0) return lms[4].x < lms[3].x; // thumb: check x
+    return lms[tip].y < lms[FINGER_MCP[i]].y;
+  });
+  const [thumb, index, middle, ring, pinky] = extended;
+  const count = extended.filter(Boolean).length;
+
+  if (!thumb && !index && !middle && !ring && !pinky) return ['FIST', 'CLOSED HAND'];
+  if (thumb && index && middle && ring && pinky) return ['OPEN HAND', 'ALL FINGERS EXTENDED'];
+  if (!thumb && index && !middle && !ring && !pinky) return ['POINT', 'INDEX FINGER'];
+  if (!thumb && index && middle && !ring && !pinky) return ['PEACE', 'V SIGN'];
+  if (thumb && index && !middle && !ring && !pinky) return ['L-SHAPE', 'THUMB + INDEX'];
+  if (!thumb && index && middle && ring && !pinky) return ['THREE', 'THREE FINGERS'];
+  if (!thumb && index && middle && ring && pinky) return ['FOUR', 'FOUR FINGERS'];
+  if (thumb && !index && !middle && !ring && pinky) return ['HANG LOOSE', 'SHAKA'];
+  if (!thumb && !index && !middle && !ring && pinky) return ['PINKY', 'PINKY UP'];
+  if (thumb && index && middle && !ring && !pinky) return ['THREE ALT', 'GUN SHAPE'];
+  return [`${count} UP`, `${count} FINGER${count !== 1 ? 'S' : ''}`];
+}
+
+function drawHand(lms, handedness) {
+  const W = canvas.width, H = canvas.height;
+  function px(lm) { return { x: (1 - lm.x) * W, y: lm.y * H }; }
+
+  // Trail
+  if (opts.trail) {
+    const tip = px(lms[8]);
+    trailPoints.push({ ...tip, age: 0 });
+    if (trailPoints.length > 40) trailPoints.shift();
+    trailPoints.forEach((p, i) => {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 3 * (1 - i / trailPoints.length), 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(0,245,255,${0.4 * (i / trailPoints.length)})`;
+      ctx.fill();
+    });
+  } else { trailPoints = []; }
+
+  // Palm fill
+  const palmPts = [0,1,5,9,13,17].map(i => px(lms[i]));
+  ctx.beginPath();
+  palmPts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+  ctx.closePath();
+  ctx.fillStyle = `rgba(0,245,255,0.04)`;
+  ctx.fill();
+
+  // Cord lines per finger
+  if (opts.cord) {
+    FINGER_CONNECTIONS.forEach((conns, fi) => {
+      const col = FINGER_COLORS[fi];
+      conns.forEach(([a, b]) => {
+        const pa = px(lms[a]), pb = px(lms[b]);
+        if (opts.glow) {
+          ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y);
+          ctx.strokeStyle = col + '40'; ctx.lineWidth = 7;
+          ctx.lineCap = 'round'; ctx.stroke();
+        }
+        ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y);
+        ctx.strokeStyle = col; ctx.lineWidth = 1.8;
+        ctx.lineCap = 'round'; ctx.stroke();
+      });
+    });
+
+    // Palm cross connections
+    [[5,9],[9,13],[13,17]].forEach(([a,b]) => {
+      const pa = px(lms[a]), pb = px(lms[b]);
+      ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y);
+      ctx.strokeStyle = cordColor + '60'; ctx.lineWidth = 1;
+      ctx.setLineDash([3,4]); ctx.stroke(); ctx.setLineDash([]);
+    });
+  }
+
+  // Landmark dots
+  if (opts.lm) {
+    lms.forEach((lm, i) => {
+      const p = px(lm);
+      const isTip = FINGER_TIPS.includes(i);
+      const isWrist = i === 0;
+      const fi = FINGER_TIPS.indexOf(i);
+      const dotCol = fi >= 0 ? FINGER_COLORS[fi] : cordColor;
+
+      if (opts.glow) {
+        ctx.beginPath(); ctx.arc(p.x, p.y, isTip ? 10 : 6, 0, Math.PI * 2);
+        ctx.fillStyle = dotCol + '25'; ctx.fill();
+      }
+      ctx.beginPath(); ctx.arc(p.x, p.y, isTip ? 4 : (isWrist ? 5 : 3), 0, Math.PI * 2);
+      ctx.fillStyle = dotCol; ctx.fill();
+
+      if (isTip && opts.tips) {
+        ctx.beginPath(); ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+        ctx.strokeStyle = dotCol; ctx.lineWidth = 1; ctx.stroke();
+      }
+
+      // LM index
+      if (isTip || isWrist) {
+        ctx.fillStyle = 'rgba(255,255,255,0.7)';
+        ctx.font = '8px Share Tech Mono';
+        ctx.fillText(i, p.x + 6, p.y - 6);
+      }
+    });
+  }
+
+  // Wrist label
+  const wp = px(lms[0]);
+  ctx.fillStyle = cordColor;
+  ctx.font = '9px Share Tech Mono';
+  ctx.fillText(handedness.toUpperCase(), wp.x - 12, wp.y + 18);
+}
+
+function updatePanel(results) {
+  const hands = results.multiHandLandmarks || [];
+  const handedness = results.multiHandedness || [];
+  document.getElementById('handCount').textContent = hands.length;
+  document.getElementById('lmCount').textContent = hands.length * 21;
+
+  const dot = document.getElementById('statusDot');
+  const label = document.getElementById('statusLabel');
+  if (hands.length > 0) {
+    dot.classList.remove('inactive'); label.textContent = 'TRACKING';
+  } else {
+    dot.classList.add('inactive'); label.textContent = 'SEARCHING';
+  }
+
+  if (hands.length === 0) {
+    for (let i = 0; i < 5; i++) {
+      document.getElementById(`fb${i}`).style.width = '0%';
+      document.getElementById(`fv${i}`).textContent = '—';
+    }
+    document.getElementById('gestureName').textContent = '—';
+    document.getElementById('gestureSub').textContent = 'AWAITING INPUT';
+    document.getElementById('coordGrid').innerHTML = '<div style="font-size:9px;color:var(--text3);">NO HAND DETECTED</div>';
+    document.getElementById('handedness').innerHTML = 'HANDEDNESS <span class="bb-val">—</span>';
+    return;
+  }
+
+  const lms = hands[0];
+  const hand = handedness[0]?.label || '?';
+  document.getElementById('handedness').innerHTML = `HANDEDNESS <span class="bb-val">${hand.toUpperCase()}</span>`;
+
+  // Finger extension
+  FINGER_TIPS.forEach((tip, i) => {
+    const mcp = FINGER_MCP[i];
+    let ext;
+    if (i === 0) { ext = lms[4].x < lms[3].x ? 1 : 0; }
+    else { ext = Math.max(0, Math.min(1, (lms[mcp].y - lms[tip].y) * 5)); }
+    const pct = Math.round(ext * 100);
+    document.getElementById(`fb${i}`).style.width = pct + '%';
+    document.getElementById(`fv${i}`).textContent = pct + '%';
+  });
+
+  // Gesture
+  const [gName, gSub] = detectGesture(lms);
+  document.getElementById('gestureName').textContent = gName;
+  document.getElementById('gestureSub').textContent = gSub;
+
+  // Coords
+  const coordHtml = lms.slice(0, 21).map((lm, i) => {
+    const isTip = FINGER_TIPS.includes(i);
+    const cls = isTip ? 'lm-active' : '';
+    return `<div class="coord-row">
+      <span>LM_${String(i).padStart(2,'0')}</span>
+      <span class="${cls}">${lm.x.toFixed(2)},${lm.y.toFixed(2)}</span>
+    </div>`;
+  }).join('');
+  document.getElementById('coordGrid').innerHTML = coordHtml;
+}
+
+function onResults(results) {
+  canvas.width = video.videoWidth || canvas.offsetWidth;
+  canvas.height = video.videoHeight || canvas.offsetHeight;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  lastResults = results;
+  updatePanel(results);
+
+  if (results.multiHandLandmarks) {
+    results.multiHandLandmarks.forEach((lms, i) => {
+      const hand = results.multiHandedness?.[i]?.label || 'Unknown';
+      drawHand(lms, hand);
+    });
+  }
+
+  // FPS
+  frameCount++;
+  const now = Date.now();
+  if (now - lastFpsTime >= 1000) {
+    fps = frameCount;
+    frameCount = 0;
+    lastFpsTime = now;
+    document.getElementById('fpsVal').textContent = fps;
+  }
+}
+
+async function startCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } } });
+    video.srcObject = stream;
+    document.getElementById('noCam').style.display = 'none';
+
+    const hands = new Hands({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
+    hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.6 });
+    hands.onResults(onResults);
+
+    const camera = new Camera(video, {
+      onFrame: async () => { await hands.send({ image: video }); },
+      width: 1280, height: 720
+    });
+    camera.start();
+    document.getElementById('statusLabel').textContent = 'INITIALIZING';
+  } catch(e) {
+    document.getElementById('noCam').innerHTML = `
+      <div class="no-cam-icon" style="font-size:30px;opacity:0.3;">⚠</div>
+      <div class="no-cam-text" style="color:#ff6b6b;">CAMERA ACCESS DENIED</div>
+      <div style="font-size:10px;color:var(--text3);margin-top:6px;text-align:center;">Allow camera permission in browser settings<br/>and reload the page.</div>`;
+  }
+}
+</script>
+</body>
+</html>
